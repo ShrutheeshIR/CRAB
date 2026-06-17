@@ -10,12 +10,13 @@ def collision_checker(robot: Robot, q: sf.Vector7):
     The pose of the bounding primitive is also computed and returned as a list of poses.
     """
 
-    link_poses: dict[str, sf.Pose3] = {robot.root.name: sf.Pose3()}
-    primitive_xyzrs: dict[str, list[list[float]]] = {link.name: [] for link in robot.links.values()}
-    bounding_xyzrs: dict[str, list[float]] = {link.name: [] for link in robot.links.values()}
+    num_links = len(robot.links)
+    link_poses: list[sf.Pose3] = [sf.Pose3() for _ in range(num_links)]
+    primitive_xyzrs: list[list[list[float]]] = [[] for _ in range(num_links)]
+    bounding_xyzrs: list[list[float]] = [[] for _ in range(num_links)]
 
-    link_env_collision: dict[str, list[float]] = {}
-    link_self_collision: dict[str, list[float]] = {}
+    link_env_collision: list[float] = [0.0] * num_links
+    link_self_collision: list[float] = [0.0] * num_links
 
 
     CCC = sp.Function("sphere_environment_collision_checker")
@@ -23,7 +24,10 @@ def collision_checker(robot: Robot, q: sf.Vector7):
 
     for joint_name in robot.traversal_order:
         joint = robot.joints[joint_name]
-        parent_link_pose = link_poses[joint.parent]
+        parent_link = robot.links[joint.parent]
+        child_link = robot.links[joint.child]
+
+        parent_link_pose = link_poses[parent_link.id]
 
         # compute the joint transform
         if joint.type == "revolute":
@@ -38,29 +42,32 @@ def collision_checker(robot: Robot, q: sf.Vector7):
 
         # compute the child link pose
         child_link_pose = parent_link_pose * joint.origin * joint_transform
-        link_poses[joint.child] = child_link_pose
+        link_poses[child_link.id] = child_link_pose
 
 
-        bounding_pose = link_poses[joint.child] * robot.links[joint.child].bounding_primitive.pose
-        bounding_xyzrs[joint.child] = [bounding_pose.t.x, bounding_pose.t.y, bounding_pose.t.z, robot.links[joint.child].bounding_primitive.radius]
+        bounding_primitive = child_link.bounding_primitive
+        if bounding_primitive is not None:
+            bounding_pose = child_link_pose * bounding_primitive.pose
+            bounding_xyzrs[child_link.id] = [bounding_pose.t.x, bounding_pose.t.y, bounding_pose.t.z, bounding_primitive.radius]
 
-        link_env_collision[joint.child] = 0
-        link_self_collision[joint.child] = 0
+        link_env_collision[child_link.id] = 0
+        link_self_collision[child_link.id] = 0
 
 
         # compute the primitive poses in the child link frame
-        for primitive in robot.links[joint.child].primitives:
+        for primitive in child_link.primitives:
             primitive_pose = child_link_pose * primitive.pose
-            primitive_xyzrs[joint.child].append([primitive_pose.t.x, primitive_pose.t.y, primitive_pose.t.z, primitive.radius])
+            primitive_xyzrs[child_link.id].append([primitive_pose.t.x, primitive_pose.t.y, primitive_pose.t.z, primitive.radius])
 
-            link_env_collision[joint.child] += CCC(primitive_pose.t.x, primitive_pose.t.y, primitive_pose.t.z, primitive.radius)
+            link_env_collision[child_link.id] += CCC(primitive_pose.t.x, primitive_pose.t.y, primitive_pose.t.z, primitive.radius)
 
             # go through all the previously computed primitives from the allowed collision pairs and check for collisions
-            for other_link_name, other_primitives in primitive_xyzrs.items():
-                if (joint.child, other_link_name) in robot.allowed_collision_pairs:
+            for other_link in robot.links.values():
+                other_primitives = primitive_xyzrs[other_link.id]
+                if (child_link.name, other_link.name) in robot.allowed_collision_pairs:
                     for other_primitive in other_primitives:
                         collision = SSC(primitive_pose.t.x, primitive_pose.t.y, primitive_pose.t.z, primitive.radius, other_primitive[0], other_primitive[1], other_primitive[2], other_primitive[3])
                         # collision is a bool, for now just add it up
-                        link_self_collision[joint.child] += collision
+                        link_self_collision[child_link.id] += collision
 
     return link_env_collision, link_self_collision
