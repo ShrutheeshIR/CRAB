@@ -15,7 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential \
-        clang clangd llvm llvm-dev libllvm-15-ocaml-dev libllvm15 clang-format libclang-dev \
+        clang clangd llvm llvm-dev clang-format libclang-dev \
         gcc g++ \
         cmake make ninja-build git wget curl ca-certificates \
         python3 python3-pip python3-venv \
@@ -33,7 +33,7 @@ RUN apt-get update && \
 
 RUN pip3 install --no-cache-dir --break-system-packages \
         symforce \
-        urdfpy \
+        yourdfpy \
         matplotlib seaborn plotly pandas \
         meshcat \
         pytest pytest-cov

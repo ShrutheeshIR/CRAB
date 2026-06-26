@@ -4,7 +4,7 @@ project(crusty_jit_lib LANGUAGES C CXX)
 # --------------------------------------------------------------------
 # Find LLVM and Clang (only needed for include directories)
 # --------------------------------------------------------------------
-find_package(LLVM REQUIRED CONFIG PATHS /usr/lib/llvm-15 NO_DEFAULT_PATH)
+find_package(LLVM REQUIRED CONFIG PATHS /usr/lib/llvm-18 NO_DEFAULT_PATH)
 list(APPEND CMAKE_PREFIX_PATH "${LLVM_DIR}")
 find_package(Clang REQUIRED CONFIG)
 
