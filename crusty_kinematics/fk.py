@@ -44,4 +44,4 @@ def forward_kinematics(robot: Robot, q: sf.Vector7):
             bounding_pose = link_poses[link.name] * link.bounding_primitive.pose
             bounding_xyzr.append([bounding_pose.t.x, bounding_pose.t.y, bounding_pose.t.z, link.bounding_primitive.radius])
 
-    return primitive_xyzr, bounding_xyzr, link_poses
+    return primitive_xyzr, bounding_xyzr #, link_poses

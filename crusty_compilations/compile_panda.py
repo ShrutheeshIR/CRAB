@@ -54,17 +54,18 @@ def codegen_for_collision_checker():
     return collision_codegen_data
 
 if __name__ == "__main__":
-    # fk_codegen_data = codegen_for_fk()
-    # print("Files generated in {}:\n".format(fk_codegen_data.output_dir))
+    fk_codegen_data = codegen_for_fk()
+    print(fk_codegen_data.function_dir, fk_codegen_data.generated_files)
+    print("Files generated in {}:\n".format(fk_codegen_data.output_dir))
     # print("\nGenerated code:\n"
     #       "----------------\n"
     #       "{}\n"
     #       "----------------".format(fk_codegen_data.generated_files[0].read_text()))
 
 
-    collision_codegen_data = codegen_for_collision_checker()
-    print("Files generated in {}:\n".format(collision_codegen_data.output_dir))
-    print("\nGenerated code:\n"
-          "----------------\n"
-          "{}\n"
-          "----------------".format(collision_codegen_data.generated_files[0].read_text()))
+    # collision_codegen_data = codegen_for_collision_checker()
+    # print("Files generated in {}:\n".format(collision_codegen_data.output_dir))
+    # print("\nGenerated code:\n"
+    #       "----------------\n"
+    #       "{}\n"
+    #       "----------------".format(collision_codegen_data.generated_files[0].read_text()))
