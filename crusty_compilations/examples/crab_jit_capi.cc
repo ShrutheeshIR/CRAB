@@ -17,7 +17,7 @@ struct CrabJitContext
 
 extern "C"
 {
-    CrabJitContext *crab_jit_create_context()
+    CrabJitContext *crab_jit_create()
     {
         auto ctx = new CrabJitContext();
         ctx->cache = std::make_shared<crab::jit::DiskObjectCache>(crab::jit::default_cache_dir());
@@ -25,7 +25,7 @@ extern "C"
         return ctx;
     }
 
-    void crab_jit_destroy_context(CrabJitContext *ctx)
+    void crab_jit_destroy(CrabJitContext *ctx)
     {
         delete ctx;
     }
