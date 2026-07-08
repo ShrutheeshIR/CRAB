@@ -40,8 +40,16 @@ extern "C"
         }
 
         crab::jit::CompileOptions opts;
-        opts.module_id = module_id;
-        auto cached_obj = ctx->cache->load_object(module_id);
+        // The disk cache is keyed by opts.module_id alone. If we used the caller's
+        // module_id verbatim, editing the source (e.g. regenerating a kernel template)
+        // without also changing module_id would silently hit a stale cached .o forever.
+        // Fold a content hash (source + flags) into the key so any source/flag change
+        // invalidates the cache, while keeping the caller's id as a readable prefix.
+        const std::string cache_key =
+            std::string(module_id) + "-" + crab::jit::hash_source(source, opts);
+        opts.module_id = cache_key;
+
+        auto cached_obj = ctx->cache->load_object(cache_key);
         if (cached_obj)
         {
             if (auto err = ctx->session->add_object_file(std::move(cached_obj)))
