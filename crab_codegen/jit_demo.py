@@ -12,12 +12,16 @@ crab_backend's generic RobotSpherized-based API for something other than raw q -
 
 fk_only_demo() is the smallest example: JITs just forward kinematics (sphere
 positions), nothing else -- no Jacobian, no collision loop, no fused kernel.
+
+q_to_ee_demo() shows the generic one-off-function path (crab_jit.simple): for a
+q -> flat vector symbolic function with no special ABI needs, this is the whole
+pipeline in two lines instead of a new template + builder + export per function.
 """
 
 import numpy as np
 
-from crab_codegen.generate_math import load_panda_robot
-from crab_jit import build_fused_collision_kernel
+from crab_codegen.generate_math import load_panda_robot, q_to_ee_pose
+from crab_jit import build_fused_collision_kernel, build_simple_jit_function
 
 
 def fused_demo():
@@ -50,6 +54,14 @@ def fk_only_demo():
     engine.close()
 
 
+def q_to_ee_demo():
+    robot = load_panda_robot()
+    kernel = build_simple_jit_function(robot, q_to_ee_pose, name="q_to_ee")
+
+    q = np.zeros(robot.nq)
+    print("ee pose (xyz + quat):", kernel(q))
+
+
 def pointer_demo():
     from crab_codegen.robot_spherized import build_robot_spherized
     from crab_jit import build_robot_jit_functions
@@ -71,4 +83,5 @@ def pointer_demo():
 
 if __name__ == "__main__":
     # fused_demo()
-    fk_only_demo()
+    # fk_only_demo()
+    q_to_ee_demo()

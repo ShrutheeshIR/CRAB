@@ -22,7 +22,7 @@ The wrappers below assume that shape. crab_codegen.generate_math pins the emitte
 function names via Codegen.function(name=...), so there's no name-guessing here.
 """
 
-FK_WRAPPER_TEMPLATE = """\
+VALUE_WRAPPER_TEMPLATE = """\
 extern "C" void {wrapper_name}(void** inputs, void** outputs) {{
     Eigen::Matrix<double, {nq}, 1> q(
         Eigen::Map<const Eigen::Matrix<double, {nq}, 1>>(reinterpret_cast<const double*>(inputs[0])));
@@ -30,6 +30,7 @@ extern "C" void {wrapper_name}(void** inputs, void** outputs) {{
     Eigen::Map<Eigen::Matrix<double, {n_out}, 1>>(reinterpret_cast<double*>(outputs[0])) = result;
 }}
 """
+
 
 # collision_checker.cpp expects the flat Jacobian buffer laid out sphere-major: for
 # each sphere, a column-major-flattened 3 x nq block. SymForce instead emits one
@@ -52,8 +53,17 @@ DEFAULT_FK_WRAPPER_NAME = "jit_forward_kinematics"
 DEFAULT_JAC_WRAPPER_NAME = "jit_forward_kinematics_jacobian"
 
 
+def generate_value_wrapper(func_name: str, nq: int, n_out: int, wrapper_name: str) -> str:
+    """Wraps any SymForce-generated `q -> flat vector of n_out doubles` function
+    (return-by-value, no Jacobian) in the void**-ABI extern "C" glue. This is the
+    generic case nearly every one-off kinematic quantity falls into -- see
+    crab_jit.simple.build_simple_jit_function, which uses this directly instead of
+    needing a bespoke template per function."""
+    return VALUE_WRAPPER_TEMPLATE.format(wrapper_name=wrapper_name, nq=nq, func_name=func_name, n_out=n_out)
+
+
 def generate_fk_wrapper(func_name: str, nq: int, n_spheres: int, wrapper_name: str = DEFAULT_FK_WRAPPER_NAME) -> str:
-    return FK_WRAPPER_TEMPLATE.format(wrapper_name=wrapper_name, nq=nq, func_name=func_name, n_out=n_spheres * 4)
+    return generate_value_wrapper(func_name, nq, n_spheres * 4, wrapper_name)
 
 
 def generate_jacobian_wrapper(func_name: str, nq: int, n_spheres: int,

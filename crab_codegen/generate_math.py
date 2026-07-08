@@ -24,6 +24,15 @@ def load_panda_robot() -> Robot:
     return urdf_to_robot(urdf).finalize()
 
 
+def q_to_ee_pose(robot: Robot, q) -> sf.Matrix:
+    """q -> flat 7-vector Pose3.to_storage() of robot.end_effectors[0]. Example
+    symbolic_fn for crab_jit.simple.build_simple_jit_function -- see that module for
+    the generic codegen+JIT+bind pipeline this plugs into."""
+    _primitive_xyzr, _bounding_xyzr, link_poses = forward_kinematics(robot, q)
+    ee_pose = link_poses[robot.link_name_to_index[robot.end_effectors[0]]]
+    return sf.Matrix(ee_pose.to_storage())
+
+
 def _build_symbolic_fk(robot: Robot, q):
     """Returns (forward_kinematics_generated, sphere_positions_generated, n_spheres).
 
@@ -31,7 +40,7 @@ def _build_symbolic_fk(robot: Robot, q):
     sphere_positions_generated(q)   -> flat [x, y, z] per sphere (used for the Jacobian,
                                         since radii are constant and have a zero Jacobian).
     """
-    primitive_xyzr, _ = forward_kinematics(robot, q)
+    primitive_xyzr, _bounding_xyzr, _link_poses = forward_kinematics(robot, q)
 
     def forward_kinematics_generated(q):
         flat_xyzr = []
@@ -156,6 +165,35 @@ def generate_jit_sources(robot: Robot | None = None) -> dict:
         # "jac_source": jac_source,
         # "jac_func_name": JAC_FUNC_NAME,
     }
+
+
+def build_and_generate_function(robot: Robot, symbolic_fn, name: str) -> dict:
+    """Generic one-shot codegen for any q -> flat-vector symbolic function (the
+    common shape for one-off kinematic quantities like q_to_ee_pose), for use with
+    crab_jit.simple.build_simple_jit_function.
+
+    symbolic_fn(robot, q) -> sf.Matrix, an (n, 1) column vector. n_out is read back
+    from that Matrix's own shape rather than asked for separately -- one less thing
+    to keep in sync by hand.
+    """
+    nq = robot.nq
+    q = sf.Matrix(nq, 1).symbolic("q")
+    expr = symbolic_fn(robot, q)
+    n_out = expr.shape[0]
+
+    # symbolic_fn already closed over its own `q` while building `expr`; the function
+    # handed to Codegen just needs to accept a `q` parameter by that name (SymForce
+    # reads the parameter name, not its usage) and return the precomputed expression --
+    # same pattern as _build_symbolic_fk's inner closures.
+    codegen = Codegen.function(func=lambda q: expr, name=name, input_types=[type(q)], config=CppConfig())
+
+    with tempfile.TemporaryDirectory(prefix="crab_jit_codegen_") as tmp_dir:
+        result = codegen.generate_function(output_dir=tmp_dir)
+        source = _find_generated_header(result, tmp_dir, name)
+
+    func_name = _extract_generated_function_name(source, name)
+
+    return {"nq": nq, "n_out": n_out, "source": source, "func_name": func_name}
 
 
 if __name__ == "__main__":

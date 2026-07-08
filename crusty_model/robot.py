@@ -17,6 +17,9 @@ class Robot:
 
     end_effectors: list[str] = field(default_factory=list)
 
+    # we need to maintain a mapping between links and index, so that we can use the index to access the link in the collision checker
+    link_name_to_index: dict[str, int] = field(init=False)
+
 
     traversal_order: list[int] = field(init=False)
 
@@ -81,6 +84,18 @@ class Robot:
                 dfs(child_link)
 
         dfs(self.root.name)
+
+        # Index-based alternative to keying by link name: SymForce's symbolic tree
+        # walking (StorageOps) only knows how to recurse into list/tuple/Matrix/Values
+        # containers, not dict, so anything symbolic keyed by link name (e.g.
+        # crusty_kinematics.fk's link_poses) has to be addressed by index instead.
+        # Root gets index 0; every other link gets the index of the joint that first
+        # visits it as a child in traversal_order, so this stays consistent with the
+        # ordering already used elsewhere (e.g. crab_codegen/sphere_order.py).
+        self.link_name_to_index = {self.root.name: 0}
+        for i, joint_name in enumerate(self.traversal_order):
+            child_link = self.joints[joint_name].child
+            self.link_name_to_index[child_link] = i + 1
 
 
     def finalize(self) -> "Robot":

@@ -16,8 +16,19 @@ def test_forward_kinematics():
     print("Bounding sphere poses and radii (x, y, z, r):")
     for bounding_xyzr in bounding_xyzrs:
         print(f"  {bounding_xyzr}")
-    for link_name, link_pose in link_poses.items():
-        print(f"Link {link_name} pose: {link_pose}")
+    for i, link in enumerate(robot.links.values()):
+        print(f"Link {link.name} pose: {link_poses[i]}")
+
+        for j, primitive_pose in enumerate(link.primitives):
+            print(f"  Primitive {j} pose: {primitive_pose.pose}")
+
+    # fetch end effector 
+    eef_poses = q_to_eeposes(robot, q, [])
+
+    print("End effector poses:")
+    for eef_pose in eef_poses:
+        print(f"  {eef_pose}")
+
 
     # for i, link in enumerate(robot.links.values()):
     #     print(f"Link {link.name} pose: {link_poses[i]}")

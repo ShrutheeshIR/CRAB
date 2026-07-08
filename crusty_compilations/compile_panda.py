@@ -21,7 +21,7 @@ def codegen_for_fk():
     robot = robot.finalize()
 
 
-    def fk(q: sf.Vector7) -> Tuple[List[List[float]], List[List[float]]]:
+    def fk(q: sf.Vector7) -> Tuple[List[List[float]], List[List[float]], List[tuple[str, sf.Pose3]]]:
         return forward_kinematics(robot, q)    
 
     fk_codegen = codegen.Codegen.function(

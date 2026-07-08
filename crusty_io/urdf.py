@@ -5,12 +5,15 @@ from crusty_model.robot import Robot
 import symforce.symbolic as sf
 
 
+from typing import List
+
 def load_urdf(path: str) -> yourdfpy.URDF:
     """Load a URDF file and return a yourdfpy.URDF object."""
     return yourdfpy.URDF.load(path)
 
-def urdf_to_robot(urdf: yourdfpy.URDF) -> Robot:
+def urdf_to_robot(urdf: yourdfpy.URDF, end_effectors: List[str] = None) -> Robot:
     """Convert a yourdfpy.URDF object to a Robot object."""
+
     robot = Robot(name="robot")
 
     for i, (link_name, link) in enumerate(urdf.link_map.items()):
@@ -51,6 +54,12 @@ def urdf_to_robot(urdf: yourdfpy.URDF) -> Robot:
         # update the parent and child links with the joint information
         robot.links[joint.parent].child_joints.append(joint.name)
         robot.links[joint.child].parent_joint = joint.name
+
+    if end_effectors is not None:
+        robot.end_effectors = end_effectors
+    else:
+        # pick the last link in the traversal order as the end effector
+        robot.end_effectors = [list(robot.links.keys())[-1]]
 
     # needed to trigger the post init function to compute the traversal order
     # this is stupid i know yeah but if you have a better way to do be my guest

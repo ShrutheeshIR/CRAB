@@ -34,6 +34,7 @@ def build_robot_jit_functions(robot=None,
 
     fk_ptr = engine.lookup(DEFAULT_FK_WRAPPER_NAME)
     jac_ptr = engine.lookup(DEFAULT_JAC_WRAPPER_NAME)
+
     return fk_ptr, jac_ptr, engine
 
 

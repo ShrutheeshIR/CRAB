@@ -272,31 +272,54 @@ we already have:
   `crab_jit_capi.cc` fix above); the `module_id` prefix and the Python-level "which
   builder function do I call for this kernel" step are still manual.
 
-### Concrete directions
+### Landed: `crab_jit.simple` — the generic one-off-function path
 
-- **Generate the wrapper from the `Codegen` object's own metadata** instead of a
-  separate hand-written template per calling-convention shape
-  (`FK_WRAPPER_TEMPLATE` vs `JACOBIAN_WRAPPER_TEMPLATE`). SymForce's `Codegen`
-  already knows its inputs and outputs; one generic wrapper generator that walks
-  that metadata and emits the `void**` marshalling loop would cover any future
-  function (arbitrary in/out count and shape) without a new template file.
-- **Derive the `ctypes` signature from the same metadata used to generate the C++
-  wrapper**, instead of writing a matching `CFUNCTYPE` by hand in `build.py`/`fused.py`.
-  If both come from one shape description, they can't drift apart — today's failure
-  mode (C++ signature and Python `CFUNCTYPE` silently disagreeing) becomes structurally
-  impossible instead of something to remember to keep in sync.
-- **A small kernel registry instead of manual plumbing per function.** A declarative
-  list of "kernel specs" (name, the symbolic-function builder, robot) that one generic
-  loader walks — build source, compile, look up symbols, bind — turns "add a new JIT'd
-  function" into "add one entry to a table" instead of edits in three files, and
-  removes the manual `crab_jit/__init__.py` export step (the registry itself is the
-  thing other code queries).
-- **A `crab_jit.jit`-style decorator/memoizing entry point**, analogous to `jax.jit`:
-  wrap the symbolic-function builder once; the first call for a given robot triggers
-  codegen + compile + bind automatically and caches the result (keyed by robot identity
-  + function identity, mirroring how the disk cache is now keyed by content hash);
-  later calls just dispatch. This would remove the need for demo code to explicitly
-  call a `build_*_jit` function at all.
+For the common case — a `q -> flat vector` function with no special ABI needs (no
+Jacobian out-param, no fusion requirement) — `crab_jit/simple.py`'s
+`build_simple_jit_function(robot, symbolic_fn, name)` now collapses steps 2 through 6
+of the old per-function workflow into one call:
+
+```python
+def q_to_ee_pose(robot, q) -> sf.Matrix:
+    ...  # the actual math
+    return sf.Matrix(...)
+
+kernel = build_simple_jit_function(robot, q_to_ee_pose, name="q_to_ee")
+kernel(q)  # -> np.ndarray
+```
+
+What it automates, concretely:
+- **One wrapper generator, not one per function.** `jit_wrapper.py`'s
+  `FK_WRAPPER_TEMPLATE`/`EEF_WRAPPER_TEMPLATE` were byte-for-byte identical except a
+  hardcoded output size — collapsed into `generate_value_wrapper(func_name, nq, n_out,
+  wrapper_name)`, used for both FK and any `crab_jit.simple` function.
+- **Output size inferred, not hand-specified.** `build_and_generate_function()`
+  (`generate_math.py`) reads `n_out` off the shape of whatever `sf.Matrix` your
+  `symbolic_fn` actually returns, instead of asking the caller to pass `n_out=7` and
+  hoping it matches.
+- **The name-reformatting gotcha (`forward_kinematics_generated` →
+  `ForwardKinematicsGenerated`) is handled once**, inside `build_and_generate_function`,
+  not re-solved per function.
+- **One `SimpleKernel` class, not one hand-written `ctypes.CFUNCTYPE` marshalling
+  class per function.** It owns the `void**` box/call/unbox boilerplate generically.
+- **No `crab_jit/__init__.py` edit, no new builder function, no new demo wiring
+  required per new function** — only `symbolic_fn` (the actual math) and one call to
+  `build_simple_jit_function` are function-specific.
+
+This is deliberately *not* used for FK/Jacobian/the fused collision kernel: those have
+bespoke ABIs for real reasons (the Jacobian's out-param + per-sphere reshape, the
+fused kernel's non-`void**` native signatures for zero-overhead calls). `crab_jit.simple`
+is for the other 90% of one-off functions, where the boilerplate was pure overhead.
+
+### Further directions not yet done
+
+- **A small kernel registry** — a declarative table of `(name, symbolic_fn)` pairs
+  that something iterates over at import time to auto-build and expose kernels —
+  would remove even the one `build_simple_jit_function(...)` call site per function.
+- **A `crab_jit.jit`-style memoizing decorator**, analogous to `jax.jit`: wrap
+  `symbolic_fn` once, and the first call for a given robot triggers codegen/compile/bind
+  automatically (keyed by robot identity + function identity), with later calls just
+  dispatching — removing the need to call a `build_*` function explicitly at all.
 - **Worth keeping in mind:** the universal `void**` ABI is what makes all of the above
   easy to automate, but it costs an extra layer of pointer indirection/boxing per call
   compared to the fused kernel's bespoke native signatures. That's the same tradeoff

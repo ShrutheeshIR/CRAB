@@ -44,4 +44,28 @@ def forward_kinematics(robot: Robot, q: sf.Vector7):
             bounding_pose = link_poses[link.name] * link.bounding_primitive.pose
             bounding_xyzr.append([bounding_pose.t.x, bounding_pose.t.y, bounding_pose.t.z, link.bounding_primitive.radius])
 
-    return primitive_xyzr, bounding_xyzr #, link_poses
+    # Computation above stays dict-keyed (readable, matches link/joint names). Only the
+    # return value needs to be dict-free: SymForce's symbolic tree walking (StorageOps)
+    # can't recurse into a dict (or a raw string, so name-tagged tuples don't work
+    # either), so re-index into a plain list ordered by robot.link_name_to_index right
+    # before returning.
+    link_poses_by_index: list[sf.Pose3] = [sf.Pose3()] * len(robot.links)
+    for link_name, pose in link_poses.items():
+        link_poses_by_index[robot.link_name_to_index[link_name]] = pose
+
+    return primitive_xyzr, bounding_xyzr, link_poses_by_index
+
+
+def q_to_eeposes(robot: Robot, q: sf.Vector7, eef_link_names: List[str]):
+    """
+    Compute fk of EEFs
+    If eef_link_names is empty, compute fk of all eefs
+    """
+    # if empty, then do it for all robot.end_effectors
+    if not eef_link_names:
+        eef_link_names = robot.end_effectors
+    eef_poses = []
+    _, _, link_poses = forward_kinematics(robot, q)
+    for eef_link_name in eef_link_names:
+        eef_poses.append(link_poses[robot.link_name_to_index[eef_link_name]])
+    return eef_poses
