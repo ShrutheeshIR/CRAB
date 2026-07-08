@@ -153,6 +153,31 @@ radii and which pairs to check baked in as literal constants (they don't depend 
 `q`, only on which robot you loaded). Compiling that whole thing at `-O3` in one shot
 lets the compiler inline and fuse across what used to be a call boundary.
 
+## `collision_checker.cpp` vs `collision_kernel.py`: same algorithm, opposite ends of generic vs. specialized
+
+These two files both implement the collision loop + cost + gradient math, but they
+sit at opposite ends of the generic-vs-specialized spectrum, which is easy to
+conflate since they compute the same thing.
+
+|                          | `src/collision_checker.cpp`                          | `crab_codegen/collision_kernel.py`                     |
+|--------------------------|--------------------------------------------------------|---------------------------------------------------------|
+| What it is               | Hand-written C++, actually compiled                    | A Python function that *generates C++ source text*      |
+| When it's compiled       | Once, ahead-of-time, as part of `crab_backend` (`build/`) | Fresh, per robot, at runtime, by the JIT (`crusty_compilations`) |
+| How it knows the robot   | Reads `RobotSpherized` (sphere radii, collision pairs) as **runtime data** — `std::vector`s passed in from Python | Bakes the robot's sphere radii/collision pairs in as **compile-time `constexpr` literals**, written fresh into the generated text for that robot |
+| How it calls FK/Jacobian | Through a **function pointer** (`fk_fn_ptr`/`jac_fn_ptr`) — doesn't know at compile time what's on the other end, or even whether it's JIT'd | FK/Jacobian's generated source is pasted directly into the *same* file — an ordinary in-file function call, not a pointer |
+| Genericity               | One binary works for any robot (robot-specific data comes in as arguments) | One generated file *is* specific to one robot; a different robot means generating (and JIT-compiling) a different file |
+| Used by                  | `pointer_demo()` — the modular path, via `crab_backend.is_collision_free(...)` etc. | `fused_demo()` — via `FusedCollisionKernel`, bypassing `crab_backend` entirely for the collision loop |
+
+The reason this distinction matters for performance: because `collision_checker.cpp`
+takes robot data as arguments and calls FK through a pointer, the compiler that built
+`crab_backend` could never have inlined FK into the loop — it didn't even have FK's
+source available, let alone know the pointer wouldn't change. `collision_kernel.py`
+sidesteps this by not being compiled once at all — it re-generates and re-JITs a
+brand new, robot-specific translation unit, so the *data* becomes literal constants
+and the *function calls* become ordinary in-file calls the optimizer can see through
+and inline, which is what "fusing FK into the collision loop" (see above) actually
+means mechanically.
+
 ## Putting it together: what happens when you run `fused_demo()`
 
 1. `crab_codegen.generate_math.load_panda_robot()` loads the URDF into a `Robot` object.
@@ -166,6 +191,41 @@ lets the compiler inline and fuse across what used to be a call boundary.
 5. You get back a `FusedCollisionKernel` — call `kernel.is_collision_free(q)` and
    you're calling machine code that was compiled specifically for Panda, moments ago,
    with FK and the collision loop fused into one optimized function.
+
+## Two build directories: `build/` vs `crusty_compilations/build/`
+
+These are two independent CMake projects (`CMakeLists.txt` and
+`crusty_compilations/CMakeLists.txt` each start their own `project(...)`), each with
+its own build directory, producing different artifacts consumed by different code:
+
+- **`build/`** — from the root `CMakeLists.txt`. Builds `crab_backend`, the
+  nanobind extension module wrapping `src/bindings.cpp` + `src/collision_checker.cpp`.
+  This is a normal, ahead-of-time C++ build — nothing here runs the JIT. Needed by
+  anything that does `import crab_backend` (`crab_codegen/robot_spherized.py`, and
+  both `jit_demo.py` demos, since they call `crab_backend.forward_kinematics`/
+  `is_collision_free`/etc.).
+- **`crusty_compilations/build/`** — from `crusty_compilations/CMakeLists.txt`.
+  Links against LLVM/Clang and builds `libcrab_jit_capi.so` (the C API wrapping
+  `crab::jit::ClangCompiler`/`JitSession`/`DiskObjectCache`), plus the unrelated
+  `example_jit` executable. Needed by anything that does `crab_jit.CrabJitEngine()`
+  — which is everything in `crab_jit/` (`engine.py`'s `_default_lib_path()` looks
+  for `libcrab_jit_capi.so` under this directory first).
+
+**Why separate, not one root build:** LLVM/Clang are heavy dependencies you only need
+if you're actually JIT-compiling; `crab_backend` itself doesn't need them at all (see
+the "why two things" discussion earlier in this doc). Keeping `crusty_compilations`
+as its own CMake project means the nanobind extension can be built (and used, via the
+`fk_fn_ptr=0`/placeholder-FK fallback path) without ever touching LLVM. This was a
+deliberate choice, not an accident — see `crab_jit/engine.py`'s `_default_lib_path()`,
+which loads `libcrab_jit_capi.so` at runtime via `ctypes` rather than the root build
+linking against it directly.
+
+**In practice: build both**, since the fused/pointer JIT demos need `crab_backend`
+*and* `libcrab_jit_capi.so` simultaneously:
+```
+cmake -S . -B build && cmake --build build --target crab_backend
+cmake -S crusty_compilations -B crusty_compilations/build && cmake --build crusty_compilations/build --target crab_jit_capi
+```
 
 ## Simplifying the "new function" workflow
 

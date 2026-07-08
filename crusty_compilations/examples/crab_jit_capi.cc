@@ -40,6 +40,14 @@ extern "C"
         }
 
         crab::jit::CompileOptions opts;
+#ifdef CRAB_EIGEN_INCLUDE_DIR
+        // JIT'd sources (SymForce-generated FK/Jacobian, the fused collision kernel)
+        // #include <Eigen/Dense>. The Clang driver invocation in ClangCompiler::compile
+        // has no notion of this process's own build flags, so Eigen's include dir has
+        // to be passed explicitly -- CRAB_EIGEN_INCLUDE_DIR is baked in at build time
+        // from the Eigen3 CMake package (see crusty_compilations/CMakeLists.txt).
+        opts.system_include_dirs.push_back(CRAB_EIGEN_INCLUDE_DIR);
+#endif
         // The disk cache is keyed by opts.module_id alone. If we used the caller's
         // module_id verbatim, editing the source (e.g. regenerating a kernel template)
         // without also changing module_id would silently hit a stale cached .o forever.

@@ -8,6 +8,13 @@ find_package(LLVM REQUIRED CONFIG PATHS /usr/lib/llvm-18 NO_DEFAULT_PATH)
 list(APPEND CMAKE_PREFIX_PATH "${LLVM_DIR}")
 find_package(Clang REQUIRED CONFIG)
 
+# --------------------------------------------------------------------
+# Find Eigen3 -- JIT'd sources (crab_codegen's SymForce output, the fused
+# collision kernel) #include <Eigen/Dense>, so the Clang driver invocation in
+# crab_jit_capi.cc needs Eigen's include dir passed as -isystem at compile time.
+# --------------------------------------------------------------------
+find_package(Eigen3 REQUIRED)
+
 message(STATUS "LLVM version: ${LLVM_PACKAGE_VERSION}")
 message(STATUS "LLVM libraries dir: ${LLVM_LIBRARY_DIRS}")
 
@@ -78,6 +85,9 @@ target_link_libraries(example_jit PRIVATE crusty_jit_lib)
 # --------------------------------------------------------------------
 add_library(crab_jit_capi SHARED examples/crab_jit_capi.cc)
 target_link_libraries(crab_jit_capi PRIVATE crusty_jit_lib)
+target_compile_definitions(crab_jit_capi PRIVATE
+    CRAB_EIGEN_INCLUDE_DIR="${EIGEN3_INCLUDE_DIR}"
+)
 
 # --------------------------------------------------------------------
 # Installation

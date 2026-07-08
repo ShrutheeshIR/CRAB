@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 
 import symforce
@@ -106,6 +107,26 @@ def _find_generated_header(codegen_result, output_dir: str, func_name: str) -> s
     raise FileNotFoundError(f"Could not locate generated header '{func_name}.h' under {output_dir}")
 
 
+# Matches the generated function's own signature (e.g.
+# "Eigen::Matrix<Scalar, 232, 1> ForwardKinematicsGenerated(const Eigen::Matrix<Scalar, 7, 1>& q)").
+_GENERATED_FUNC_NAME_RE = re.compile(r"(\w+)\(\s*const Eigen::Matrix<Scalar,\s*\d+,\s*1>\s*&\s*q\b")
+
+
+def _extract_generated_function_name(source: str, requested_name: str) -> str:
+    """SymForce's CppConfig reformats the name passed to Codegen.function(name=...)
+    into its own C++ naming convention (e.g. "forward_kinematics_generated" becomes
+    "ForwardKinematicsGenerated") instead of emitting it verbatim, so the real symbol
+    has to be read back out of the generated source rather than assumed to match what
+    we asked for.
+    """
+    match = _GENERATED_FUNC_NAME_RE.search(source)
+    if not match:
+        raise ValueError(
+            f"Could not find generated function signature for '{requested_name}' in generated source"
+        )
+    return match.group(1)
+
+
 def generate_jit_sources(robot: Robot | None = None) -> dict:
     """Runs the same SymForce codegen into a scratch directory and returns the raw
     generated C++ source text, for embedding directly into a JIT compilation unit
@@ -125,11 +146,13 @@ def generate_jit_sources(robot: Robot | None = None) -> dict:
         fk_source = _find_generated_header(fk_result, fk_dir, FK_FUNC_NAME)
         # jac_source = _find_generated_header(jac_result, jac_dir, JAC_FUNC_NAME)
 
+    fk_func_name = _extract_generated_function_name(fk_source, FK_FUNC_NAME)
+
     return {
         "nq": nq,
         "n_spheres": n_spheres,
         "fk_source": fk_source,
-        "fk_func_name": FK_FUNC_NAME,
+        "fk_func_name": fk_func_name,
         # "jac_source": jac_source,
         # "jac_func_name": JAC_FUNC_NAME,
     }
