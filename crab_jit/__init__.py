@@ -1,14 +1,13 @@
 from .engine import CrabJitEngine
-from .build import build_robot_jit_functions, build_robot_fk_jit
+from .binder import JitFunction, bind_jit_function
+from .simple import build_simple_jit_function
 from .fused import FusedCollisionKernel, build_fused_collision_kernel
-from .simple import SimpleKernel, build_simple_jit_function
 
 __all__ = [
     "CrabJitEngine",
-    "build_robot_jit_functions",
-    "build_robot_fk_jit",
+    "JitFunction",
+    "bind_jit_function",
+    "build_simple_jit_function",
     "FusedCollisionKernel",
     "build_fused_collision_kernel",
-    "SimpleKernel",
-    "build_simple_jit_function",
 ]

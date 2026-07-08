@@ -1,16 +1,20 @@
-"""Generates a single, fully fused JIT translation unit per robot: FK + the
+"""Path B: a hand-written, fused JIT translation unit per robot -- FK + the
 collision-pair loop + cost/gradient math all in one compilation unit, so -O3 can
-inline and fuse across what used to be a function-pointer call boundary
-(crab_codegen.jit_wrapper's FK/Jacobian sub-kernels, called from the fixed, separately
-compiled loop in src/collision_checker.cpp).
+inline and fuse across what a function-pointer call boundary would otherwise prevent.
 
-Sphere radii and which sphere-index pairs to check are all known once the robot model
-is loaded (they don't depend on q), so they're baked in as compile-time constants
-instead of being looked up at runtime through crab::RobotSpherized.
+Sphere radii and which sphere-index pairs to check are known once the robot model is
+loaded (they don't depend on q), so they're baked in as compile-time constants.
+
+Exported functions use the same `void** inputs, void** outputs` ABI as Path A
+(crab_jit.simple) -- see crab_jit.binder.JitFunction, the one binding mechanism used
+for both paths (REDESIGN.md). This is what let `FusedCollisionKernel` stop being a
+bespoke ctypes.CFUNCTYPE class and become a thin wrapper over three generic
+JitFunctions instead.
 """
 
 from crusty_model.robot import Robot
 from crab_codegen.sphere_order import robot_sphere_list
+from crab_codegen.generate_math import build_and_generate_function_with_jacobian, forward_kinematics_spheres
 
 FK_IS_FREE = "jit_is_collision_free"
 FK_COST = "jit_compute_collision_cost"
@@ -35,11 +39,15 @@ constexpr Pair kSelfPairs[{pairs_array_size}] = {{{pairs}}};
 
 }}  // namespace crab_fused
 
-extern "C" int {fn_is_free}(const double* q_ptr) {{
+// inputs[0] = q (kNQ doubles). outputs[0][0] = 1.0 if collision-free, 0.0 otherwise.
+extern "C" void {fn_is_free}(void** inputs, void** outputs) {{
     Eigen::Matrix<double, crab_fused::kNQ, 1> q(
-        Eigen::Map<const Eigen::Matrix<double, crab_fused::kNQ, 1>>(q_ptr));
+        Eigen::Map<const Eigen::Matrix<double, crab_fused::kNQ, 1>>(reinterpret_cast<const double*>(inputs[0])));
     Eigen::Matrix<double, crab_fused::kNSpheres * 4, 1> spheres_world =
         sym::{fk_func_name}<double>(q);
+
+    double* out = reinterpret_cast<double*>(outputs[0]);
+    out[0] = 1.0;
 
     for (int k = 0; k < crab_fused::kNumPairs; ++k) {{
         const auto& p = crab_fused::kSelfPairs[k];
@@ -49,22 +57,25 @@ extern "C" int {fn_is_free}(const double* q_ptr) {{
         double dist_sq = dx * dx + dy * dy + dz * dz;
         double r_sum = crab_fused::kRadii[p.a] + crab_fused::kRadii[p.b];
         if (dist_sq < r_sum * r_sum) {{
-            return 0;
+            out[0] = 0.0;
+            return;
         }}
     }}
 
     for (int i = 0; i < crab_fused::kNSpheres; ++i) {{
         double z = spheres_world(i * 4 + 2);
         if (z < crab_fused::kRadii[i]) {{
-            return 0;
+            out[0] = 0.0;
+            return;
         }}
     }}
-    return 1;
 }}
 
-extern "C" double {fn_cost}(const double* q_ptr, double margin) {{
+// inputs[0] = q (kNQ doubles), inputs[1] = margin (1 double). outputs[0][0] = cost.
+extern "C" void {fn_cost}(void** inputs, void** outputs) {{
     Eigen::Matrix<double, crab_fused::kNQ, 1> q(
-        Eigen::Map<const Eigen::Matrix<double, crab_fused::kNQ, 1>>(q_ptr));
+        Eigen::Map<const Eigen::Matrix<double, crab_fused::kNQ, 1>>(reinterpret_cast<const double*>(inputs[0])));
+    double margin = *reinterpret_cast<const double*>(inputs[1]);
     Eigen::Matrix<double, crab_fused::kNSpheres * 4, 1> spheres_world =
         sym::{fk_func_name}<double>(q);
 
@@ -91,12 +102,15 @@ extern "C" double {fn_cost}(const double* q_ptr, double margin) {{
         }}
     }}
 
-    return total_cost;
+    reinterpret_cast<double*>(outputs[0])[0] = total_cost;
 }}
 
-extern "C" double {fn_cost_grad}(const double* q_ptr, double margin, double* grad_ptr) {{
+// inputs[0] = q (kNQ doubles), inputs[1] = margin (1 double).
+// outputs[0][0] = cost, outputs[1] = grad (kNQ doubles).
+extern "C" void {fn_cost_grad}(void** inputs, void** outputs) {{
     Eigen::Matrix<double, crab_fused::kNQ, 1> q(
-        Eigen::Map<const Eigen::Matrix<double, crab_fused::kNQ, 1>>(q_ptr));
+        Eigen::Map<const Eigen::Matrix<double, crab_fused::kNQ, 1>>(reinterpret_cast<const double*>(inputs[0])));
+    double margin = *reinterpret_cast<const double*>(inputs[1]);
     Eigen::Matrix<double, crab_fused::kNSpheres * 4, 1> spheres_world =
         sym::{fk_func_name}<double>(q);
 
@@ -138,8 +152,8 @@ extern "C" double {fn_cost_grad}(const double* q_ptr, double margin, double* gra
         }}
     }}
 
-    Eigen::Map<Eigen::Matrix<double, crab_fused::kNQ, 1>>(grad_ptr) = grad;
-    return total_cost;
+    reinterpret_cast<double*>(outputs[0])[0] = total_cost;
+    Eigen::Map<Eigen::Matrix<double, crab_fused::kNQ, 1>>(reinterpret_cast<double*>(outputs[1])) = grad;
 }}
 """
 
@@ -158,12 +172,19 @@ def resolve_self_collision_pairs(spheres: list[dict], link_name_pairs) -> list[t
     return pairs
 
 
-def build_fused_kernel_source(generated: dict, robot: Robot,
+def build_fused_kernel_source(robot: Robot,
                                fn_is_free: str = FK_IS_FREE,
                                fn_cost: str = FK_COST,
-                               fn_cost_grad: str = FK_COST_GRAD) -> str:
+                               fn_cost_grad: str = FK_COST_GRAD) -> dict:
+    """Generates FK + its Jacobian, resolves this robot's collision-pair/radii data,
+    and fills in FUSED_KERNEL_TEMPLATE. Returns {"source": str, "nq": int} ready for
+    crab_jit.fused.build_fused_collision_kernel to compile and bind."""
     if not robot.allowed_collision_pairs:
         robot.compute_allowed_collision_pairs()
+
+    generated = build_and_generate_function_with_jacobian(robot, forward_kinematics_spheres, "forward_kinematics_spheres")
+    nq = generated["nq"]
+    n_spheres = generated["n_out"] // 4
 
     spheres = robot_sphere_list(robot)
     pairs = resolve_self_collision_pairs(spheres, robot.allowed_collision_pairs)
@@ -171,13 +192,13 @@ def build_fused_kernel_source(generated: dict, robot: Robot,
     radii = ", ".join(repr(s["radius"]) for s in spheres)
     pairs_literal = ", ".join(f"{{{i}, {j}}}" for i, j in pairs)
 
-    return FUSED_KERNEL_TEMPLATE.format(
-        fk_source=generated["fk_source"],
+    source = FUSED_KERNEL_TEMPLATE.format(
+        fk_source=generated["value_source"],
         jac_source=generated["jac_source"],
-        fk_func_name=generated["fk_func_name"],
+        fk_func_name=generated["value_func_name"],
         jac_func_name=generated["jac_func_name"],
-        nq=generated["nq"],
-        n_spheres=len(spheres),
+        nq=nq,
+        n_spheres=n_spheres,
         radii=radii,
         n_pairs=len(pairs),
         pairs_array_size=max(len(pairs), 1),
@@ -186,3 +207,5 @@ def build_fused_kernel_source(generated: dict, robot: Robot,
         fn_cost=fn_cost,
         fn_cost_grad=fn_cost_grad,
     )
+
+    return {"source": source, "nq": nq}

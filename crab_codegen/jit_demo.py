@@ -1,26 +1,20 @@
-"""End-to-end examples for CRAB's JIT backend.
+"""End-to-end examples for CRAB's JIT backend (see REDESIGN.md for the two-path design).
 
-fused_demo() is the recommended path: FK + the collision loop + cost/gradient are all
-JIT-compiled into one -O3 translation unit per robot (crab_codegen.collision_kernel),
-so there's no function-pointer boundary between FK and the collision math -- the
-compiler can inline and fuse across the whole thing.
+fused_demo() is Path B: FK + the collision loop + cost/gradient are all JIT-compiled
+into one -O3 translation unit per robot (crab_codegen.collision_kernel), so there's no
+call boundary between FK and the collision math for the compiler to fuse across.
 
-pointer_demo() is the older, more modular path: only FK/Jacobian are JIT'd
-(crab_codegen.jit_wrapper), and the fixed, separately-compiled loop in
-src/collision_checker.cpp calls them through a function pointer. Useful if you need
-crab_backend's generic RobotSpherized-based API for something other than raw q -> cost.
+fk_demo() and q_to_ee_demo() are Path A (crab_jit.simple): a single q -> flat vector
+symbolic function, JIT'd and bound generically -- no template/builder/export needed
+per function, just the math plus one call to build_simple_jit_function.
 
-fk_only_demo() is the smallest example: JITs just forward kinematics (sphere
-positions), nothing else -- no Jacobian, no collision loop, no fused kernel.
-
-q_to_ee_demo() shows the generic one-off-function path (crab_jit.simple): for a
-q -> flat vector symbolic function with no special ABI needs, this is the whole
-pipeline in two lines instead of a new template + builder + export per function.
+task_space_distance_demo() is Path A with an extra runtime input beyond q (a goal
+pose), showing task_space_distance built on top of q_to_ee_pose's own convention.
 """
 
 import numpy as np
 
-from crab_codegen.generate_math import load_panda_robot, q_to_ee_pose
+from crab_codegen.generate_math import load_panda_robot, q_to_ee_pose, forward_kinematics_spheres, task_space_distance
 from crab_jit import build_fused_collision_kernel, build_simple_jit_function
 
 
@@ -35,23 +29,14 @@ def fused_demo():
     print("cost:", cost, "grad:", grad)
 
 
-def fk_only_demo():
-    """JITs *only* forward kinematics (sphere positions) -- no Jacobian, no collision
-    loop, no fused kernel. Smallest possible example of crab_jit: one generated C++
-    function, wrapped, compiled, called."""
-    from crab_codegen.robot_spherized import build_robot_spherized
-    from crab_jit import build_robot_fk_jit
-    import crab_backend
-
+def fk_demo():
+    """Smallest possible example of Path A: JITs just forward kinematics (sphere
+    positions), nothing else."""
     robot = load_panda_robot()
-    spherized = build_robot_spherized(robot)
-    fk_ptr, engine = build_robot_fk_jit(robot)
+    kernel = build_simple_jit_function(robot, forward_kinematics_spheres, name="forward_kinematics")
 
     q = np.zeros(robot.nq)
-    spheres_world = crab_backend.forward_kinematics(q, spherized, fk_ptr)
-    print("spheres_world:", spheres_world)
-
-    engine.close()
+    print("spheres_world (flat xyzr per sphere):", kernel(q))
 
 
 def q_to_ee_demo():
@@ -62,26 +47,25 @@ def q_to_ee_demo():
     print("ee pose (xyz + quat):", kernel(q))
 
 
-def pointer_demo():
-    from crab_codegen.robot_spherized import build_robot_spherized
-    from crab_jit import build_robot_jit_functions
-    import crab_backend
-
+def task_space_distance_demo():
     robot = load_panda_robot()
-    spherized = build_robot_spherized(robot)
-    fk_ptr, jac_ptr, engine = build_robot_jit_functions(robot)
+
+    # Get a real goal pose from q_to_ee_pose itself, at some other configuration --
+    # the two kernels agree on the flat-pose convention (xyz + quat) by construction,
+    # since task_space_distance's goal_pose_flat input uses the same layout
+    # q_to_ee_pose's output does.
+    ee_kernel = build_simple_jit_function(robot, q_to_ee_pose, name="q_to_ee")
+    goal_pose = ee_kernel(np.full(robot.nq, 0.3))
+
+    dist_kernel = build_simple_jit_function(robot, task_space_distance, name="task_space_distance",
+                                             extra_inputs=[("goal_pose", 7)])
 
     q = np.zeros(robot.nq)
-    spheres_world = crab_backend.forward_kinematics(q, spherized, fk_ptr)
-    print("spheres_world:", spheres_world)
-    print("collision free:", crab_backend.is_collision_free(q, spherized, fk_ptr))
-    cost, grad = crab_backend.compute_collision_cost_with_gradient(q, spherized, 0.05, fk_ptr, jac_ptr)
-    print("cost:", cost, "grad:", grad)
-
-    engine.close()
+    print("task space distance to goal:", dist_kernel(q, goal_pose))
 
 
 if __name__ == "__main__":
     # fused_demo()
-    # fk_only_demo()
     q_to_ee_demo()
+    fk_demo()
+    task_space_distance_demo()

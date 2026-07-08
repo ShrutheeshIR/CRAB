@@ -1,3 +1,4 @@
+import inspect
 import os
 import re
 import tempfile
@@ -12,90 +13,66 @@ from crusty_model.robot import Robot
 from crusty_io.urdf import load_urdf, urdf_to_robot
 from crusty_kinematics.fk import forward_kinematics
 
-# Names of the SymForce-generated functions. Codegen.function(name=...) below pins
-# these exactly, so the JIT wrapper (crab_codegen/jit_wrapper.py) never has to guess
-# what SymForce decided to call them.
-FK_FUNC_NAME = "forward_kinematics_generated"
-JAC_FUNC_NAME = "forward_kinematics_jacobian_generated"
-
 
 def load_panda_robot() -> Robot:
     urdf = load_urdf("robots/panda/panda_spherized.urdf")
     return urdf_to_robot(urdf).finalize()
 
 
+def forward_kinematics_spheres(robot: Robot, q) -> sf.Matrix:
+    """q -> flat [x, y, z, radius] per collision sphere, in
+    crab_codegen.sphere_order's canonical ordering (same ordering
+    crusty_kinematics.fk.forward_kinematics already produces). Path-A-compatible
+    (see crab_jit.simple.build_simple_jit_function) and also embedded directly into
+    the fused collision kernel (Path B, crab_codegen.collision_kernel)."""
+    primitive_xyzr, _bounding_xyzr, _link_poses = forward_kinematics(robot, q)
+    flat_xyzr = []
+    for x, y, z, r in primitive_xyzr:
+        flat_xyzr.extend([x, y, z, r])
+    return sf.Matrix(flat_xyzr)
+
+
 def q_to_ee_pose(robot: Robot, q) -> sf.Matrix:
     """q -> flat 7-vector Pose3.to_storage() of robot.end_effectors[0]. Example
-    symbolic_fn for crab_jit.simple.build_simple_jit_function -- see that module for
-    the generic codegen+JIT+bind pipeline this plugs into."""
+    symbolic_fn for crab_jit.simple.build_simple_jit_function."""
     _primitive_xyzr, _bounding_xyzr, link_poses = forward_kinematics(robot, q)
     ee_pose = link_poses[robot.link_name_to_index[robot.end_effectors[0]]]
     return sf.Matrix(ee_pose.to_storage())
 
 
-def _build_symbolic_fk(robot: Robot, q):
-    """Returns (forward_kinematics_generated, sphere_positions_generated, n_spheres).
+def task_space_distance(robot: Robot, q, goal_pose_flat) -> sf.Matrix:
+    """(q, goal_pose) -> [translation distance] between the end effector and a goal
+    pose. goal_pose_flat is a flat 7-vector, Pose3.to_storage()'s layout -- same
+    convention q_to_ee_pose returns, so goal_pose can come from a previous
+    q_to_ee_pose call. Example symbolic_fn with an extra runtime input beyond q; pass
+    extra_inputs=[("goal_pose", 7)] to build_simple_jit_function."""
+    _primitive_xyzr, _bounding_xyzr, link_poses = forward_kinematics(robot, q)
+    ee_pose = link_poses[robot.link_name_to_index[robot.end_effectors[0]]]
+    goal_pose = sf.Pose3.from_storage(list(goal_pose_flat))
+    rel = goal_pose.inverse() * ee_pose
+    return sf.Matrix([rel.t.norm()])
 
-    forward_kinematics_generated(q) -> flat [x, y, z, r] per sphere.
-    sphere_positions_generated(q)   -> flat [x, y, z] per sphere (used for the Jacobian,
-                                        since radii are constant and have a zero Jacobian).
+
+def _make_traced_func(param_names: list[str], expr):
+    """Builds a callable whose introspectable parameter names match param_names but
+    which always returns the already-built `expr`. Codegen.function reads parameter
+    names off the function signature to name generated C++ arguments; the expression
+    graph itself has to be built ahead of time in plain Python (closing over the real
+    q/extra symbols), since it can involve arbitrary robot-specific Python logic
+    (e.g. forward_kinematics's joint traversal) that isn't itself symbolic tracing
+    through a generic wrapper.
     """
-    primitive_xyzr, _bounding_xyzr, _link_poses = forward_kinematics(robot, q)
+    def _traced(*_args):
+        return expr
 
-    def forward_kinematics_generated(q):
-        flat_xyzr = []
-        for x, y, z, r in primitive_xyzr:
-            flat_xyzr.extend([x, y, z, r])
-        return sf.Matrix(flat_xyzr)
-
-    def sphere_positions_generated(q):
-        flat_xyz = []
-        for x, y, z, r in primitive_xyzr:
-            flat_xyz.extend([x, y, z])
-        return sf.Matrix(flat_xyz)
-
-    return forward_kinematics_generated, sphere_positions_generated, len(primitive_xyzr)
-
-
-def _build_codegen_objects(robot: Robot):
-    nq = robot.nq
-    q = sf.Matrix(nq, 1).symbolic("q")
-
-    fk_fn, pos_fn, n_spheres = _build_symbolic_fk(robot, q)
-
-    cpp_config = CppConfig()
-    # nq is only known at runtime, so q's type can't come from a static annotation on
-    # forward_kinematics_generated/sphere_positions_generated (_build_symbolic_fk) --
-    # it has to be passed explicitly here.
-    input_types = [type(q)]
-    codegen_fk = Codegen.function(func=fk_fn, name=FK_FUNC_NAME, input_types=input_types, config=cpp_config)
-    codegen_pos = Codegen.function(func=pos_fn, name="sphere_positions_generated", input_types=input_types, config=cpp_config)
-    # codegen_jac = codegen_pos.with_linearization(which_args=["q"], name=JAC_FUNC_NAME)
-
-    return codegen_fk, nq, n_spheres
-
-
-def generate_math(robot: Robot | None = None, output_dir: str | None = None) -> dict:
-    """Ahead-of-time codegen: writes FK + Jacobian C++ sources to disk.
-
-    Picked up by the root CMakeLists.txt (HAVE_GENERATED_KINEMATICS path) for a
-    statically-compiled crab_backend. See generate_jit_sources() for the runtime-JIT
-    equivalent that doesn't require a rebuild of the extension module.
-    """
-    robot = robot or load_panda_robot()
-    codegen_fk, nq, n_spheres = _build_codegen_objects(robot)
-
-    output_dir = output_dir or os.path.abspath("src/generated")
-    print(f"Generating C++ files to {output_dir}...")
-    codegen_fk.generate_function(output_dir=output_dir)
-    # codegen_jac.generate(output_dir=output_dir)
-    print("SymForce CodeGen successfully completed!")
-
-    return {"output_dir": output_dir, "nq": nq, "n_spheres": n_spheres}
+    _traced.__signature__ = inspect.Signature(
+        [inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD) for name in param_names]
+    )
+    return _traced
 
 
 def _find_generated_header(codegen_result, output_dir: str, func_name: str) -> str:
-    """Locates the generated `{func_name}.h` from a Codegen.generate() call.
+    """Locates the generated `{func_name}.h` from a Codegen.generate_function() call.
 
     SymForce's return value shape has shifted across versions, so this first tries
     the documented `generated_files` attribute and falls back to walking the output
@@ -136,65 +113,78 @@ def _extract_generated_function_name(source: str, requested_name: str) -> str:
     return match.group(1)
 
 
-def generate_jit_sources(robot: Robot | None = None) -> dict:
-    """Runs the same SymForce codegen into a scratch directory and returns the raw
-    generated C++ source text, for embedding directly into a JIT compilation unit
-    via crab_codegen.jit_wrapper + crab_jit. This is the runtime-JIT counterpart to
-    generate_math()'s ahead-of-time file output -- nothing is written under src/.
-    """
-    robot = robot or load_panda_robot()
-    codegen_fk, nq, n_spheres = _build_codegen_objects(robot)
-
-    with tempfile.TemporaryDirectory(prefix="crab_jit_codegen_") as tmp_dir:
-        fk_dir = os.path.join(tmp_dir, "fk")
-        jac_dir = os.path.join(tmp_dir, "jac")
-
-        fk_result = codegen_fk.generate_function(output_dir=fk_dir)
-        # jac_result = codegen_jac.generate(output_dir=jac_dir)
-
-        fk_source = _find_generated_header(fk_result, fk_dir, FK_FUNC_NAME)
-        # jac_source = _find_generated_header(jac_result, jac_dir, JAC_FUNC_NAME)
-
-    fk_func_name = _extract_generated_function_name(fk_source, FK_FUNC_NAME)
-
-    return {
-        "nq": nq,
-        "n_spheres": n_spheres,
-        "fk_source": fk_source,
-        "fk_func_name": fk_func_name,
-        # "jac_source": jac_source,
-        # "jac_func_name": JAC_FUNC_NAME,
-    }
-
-
-def build_and_generate_function(robot: Robot, symbolic_fn, name: str) -> dict:
-    """Generic one-shot codegen for any q -> flat-vector symbolic function (the
-    common shape for one-off kinematic quantities like q_to_ee_pose), for use with
+def build_and_generate_function(robot: Robot, symbolic_fn, name: str,
+                                 extra_inputs: list[tuple[str, int]] | None = None) -> dict:
+    """Generic one-shot codegen for a Path-A function, for use with
     crab_jit.simple.build_simple_jit_function.
 
-    symbolic_fn(robot, q) -> sf.Matrix, an (n, 1) column vector. n_out is read back
-    from that Matrix's own shape rather than asked for separately -- one less thing
-    to keep in sync by hand.
+    symbolic_fn(robot, q, *extra_values) -> sf.Matrix, an (n, 1) column vector.
+    extra_inputs declares any inputs beyond q as (name, size) pairs -- e.g.
+    [("goal_pose", 7)] for a flat Pose3.to_storage() goal (see task_space_distance).
+    Each becomes its own sf.Matrix(size, 1).symbolic(name) argument and its own
+    void** input slot, in declaration order after q. n_out is read back from
+    symbolic_fn's own returned Matrix shape rather than asked for separately.
     """
     nq = robot.nq
+    extra_inputs = extra_inputs or []
+
     q = sf.Matrix(nq, 1).symbolic("q")
-    expr = symbolic_fn(robot, q)
+    extra_syms = [sf.Matrix(size, 1).symbolic(ename) for ename, size in extra_inputs]
+
+    expr = symbolic_fn(robot, q, *extra_syms)
     n_out = expr.shape[0]
 
-    # symbolic_fn already closed over its own `q` while building `expr`; the function
-    # handed to Codegen just needs to accept a `q` parameter by that name (SymForce
-    # reads the parameter name, not its usage) and return the precomputed expression --
-    # same pattern as _build_symbolic_fk's inner closures.
-    codegen = Codegen.function(func=lambda q: expr, name=name, input_types=[type(q)], config=CppConfig())
+    param_names = ["q"] + [ename for ename, _ in extra_inputs]
+    traced_func = _make_traced_func(param_names, expr)
+    input_types = [type(q)] + [type(s) for s in extra_syms]
+
+    codegen = Codegen.function(func=traced_func, name=name, input_types=input_types, config=CppConfig())
 
     with tempfile.TemporaryDirectory(prefix="crab_jit_codegen_") as tmp_dir:
         result = codegen.generate_function(output_dir=tmp_dir)
         source = _find_generated_header(result, tmp_dir, name)
 
     func_name = _extract_generated_function_name(source, name)
+    input_sizes = [nq] + [size for _, size in extra_inputs]
 
-    return {"nq": nq, "n_out": n_out, "source": source, "func_name": func_name}
+    return {"nq": nq, "n_out": n_out, "input_sizes": input_sizes, "source": source, "func_name": func_name}
 
 
-if __name__ == "__main__":
-    generate_math()
+def build_and_generate_function_with_jacobian(robot: Robot, symbolic_fn, name: str) -> dict:
+    """Path-B counterpart to build_and_generate_function: also generates the Jacobian
+    of symbolic_fn's output w.r.t. q, for embedding both the value and its Jacobian
+    into one hand-written fused kernel translation unit (see
+    crab_codegen.collision_kernel). Path A never needs a Jacobian -- nothing exposes a
+    raw Jacobian externally anymore, it's only ever consumed internally by a fused
+    kernel's own control flow.
+    """
+    nq = robot.nq
+    q = sf.Matrix(nq, 1).symbolic("q")
+    expr = symbolic_fn(robot, q)
+    n_out = expr.shape[0]
+
+    codegen_value = Codegen.function(func=lambda q: expr, name=name, input_types=[type(q)], config=CppConfig())
+    jac_name = f"{name}_jacobian"
+    codegen_jac = codegen_value.with_jacobian(which_args=["q"], name=jac_name)
+
+    with tempfile.TemporaryDirectory(prefix="crab_jit_codegen_") as tmp_dir:
+        value_dir = os.path.join(tmp_dir, "value")
+        jac_dir = os.path.join(tmp_dir, "jac")
+
+        value_result = codegen_value.generate_function(output_dir=value_dir)
+        jac_result = codegen_jac.generate_function(output_dir=jac_dir)
+
+        value_source = _find_generated_header(value_result, value_dir, name)
+        jac_source = _find_generated_header(jac_result, jac_dir, jac_name)
+
+    value_func_name = _extract_generated_function_name(value_source, name)
+    jac_func_name = _extract_generated_function_name(jac_source, jac_name)
+
+    return {
+        "nq": nq,
+        "n_out": n_out,
+        "value_source": value_source,
+        "value_func_name": value_func_name,
+        "jac_source": jac_source,
+        "jac_func_name": jac_func_name,
+    }
