@@ -1,56 +1,19 @@
+"""Generic codegen machinery: turns a plain `symbolic_fn(robot, q, *extra) -> sf.Matrix`
+function (see crusty_kinematics.derived for the actual math) into generated C++ source
+plus the real emitted symbol name, ready for crab_jit.simple/crab_codegen.collision_kernel
+to wrap in the void**-ABI and JIT. No robot-specific math lives here.
+"""
+
 import inspect
 import os
 import re
 import tempfile
-
 import symforce
-symforce.set_symbolic_api("symengine")  # Use symengine for speed, since we don't need SymPy's features
 
 import symforce.symbolic as sf
 from symforce.codegen import Codegen, CppConfig
 
 from crusty_model.robot import Robot
-from crusty_io.urdf import load_urdf, urdf_to_robot
-from crusty_kinematics.fk import forward_kinematics
-
-
-def load_panda_robot() -> Robot:
-    urdf = load_urdf("robots/panda/panda_spherized.urdf")
-    return urdf_to_robot(urdf).finalize()
-
-
-def forward_kinematics_spheres(robot: Robot, q) -> sf.Matrix:
-    """q -> flat [x, y, z, radius] per collision sphere, in
-    crab_codegen.sphere_order's canonical ordering (same ordering
-    crusty_kinematics.fk.forward_kinematics already produces). Path-A-compatible
-    (see crab_jit.simple.build_simple_jit_function) and also embedded directly into
-    the fused collision kernel (Path B, crab_codegen.collision_kernel)."""
-    primitive_xyzr, _bounding_xyzr, _link_poses = forward_kinematics(robot, q)
-    flat_xyzr = []
-    for x, y, z, r in primitive_xyzr:
-        flat_xyzr.extend([x, y, z, r])
-    return sf.Matrix(flat_xyzr)
-
-
-def q_to_ee_pose(robot: Robot, q) -> sf.Matrix:
-    """q -> flat 7-vector Pose3.to_storage() of robot.end_effectors[0]. Example
-    symbolic_fn for crab_jit.simple.build_simple_jit_function."""
-    _primitive_xyzr, _bounding_xyzr, link_poses = forward_kinematics(robot, q)
-    ee_pose = link_poses[robot.link_name_to_index[robot.end_effectors[0]]]
-    return sf.Matrix(ee_pose.to_storage())
-
-
-def task_space_distance(robot: Robot, q, goal_pose_flat) -> sf.Matrix:
-    """(q, goal_pose) -> [translation distance] between the end effector and a goal
-    pose. goal_pose_flat is a flat 7-vector, Pose3.to_storage()'s layout -- same
-    convention q_to_ee_pose returns, so goal_pose can come from a previous
-    q_to_ee_pose call. Example symbolic_fn with an extra runtime input beyond q; pass
-    extra_inputs=[("goal_pose", 7)] to build_simple_jit_function."""
-    _primitive_xyzr, _bounding_xyzr, link_poses = forward_kinematics(robot, q)
-    ee_pose = link_poses[robot.link_name_to_index[robot.end_effectors[0]]]
-    goal_pose = sf.Pose3.from_storage(list(goal_pose_flat))
-    rel = goal_pose.inverse() * ee_pose
-    return sf.Matrix([rel.t.norm()])
 
 
 def _make_traced_func(param_names: list[str], expr):
@@ -120,10 +83,11 @@ def build_and_generate_function(robot: Robot, symbolic_fn, name: str,
 
     symbolic_fn(robot, q, *extra_values) -> sf.Matrix, an (n, 1) column vector.
     extra_inputs declares any inputs beyond q as (name, size) pairs -- e.g.
-    [("goal_pose", 7)] for a flat Pose3.to_storage() goal (see task_space_distance).
-    Each becomes its own sf.Matrix(size, 1).symbolic(name) argument and its own
-    void** input slot, in declaration order after q. n_out is read back from
-    symbolic_fn's own returned Matrix shape rather than asked for separately.
+    [("goal_pose", 7)] for a flat Pose3.to_storage() goal (see
+    crusty_kinematics.derived.task_space_distance). Each becomes its own
+    sf.Matrix(size, 1).symbolic(name) argument and its own void** input slot, in
+    declaration order after q. n_out is read back from symbolic_fn's own returned
+    Matrix shape rather than asked for separately.
     """
     nq = robot.nq
     extra_inputs = extra_inputs or []

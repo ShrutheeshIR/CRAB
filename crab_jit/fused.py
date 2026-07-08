@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from crab_codegen.collision_kernel import build_fused_kernel_source, FK_IS_FREE, FK_COST, FK_COST_GRAD
-from crab_codegen.generate_math import load_panda_robot
+from crab_codegen.fixtures import load_panda_robot
 
 from .binder import bind_jit_function
 from .engine import CrabJitEngine

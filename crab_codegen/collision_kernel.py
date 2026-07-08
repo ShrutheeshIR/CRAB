@@ -14,7 +14,8 @@ JitFunctions instead.
 
 from crusty_model.robot import Robot
 from crab_codegen.sphere_order import robot_sphere_list
-from crab_codegen.generate_math import build_and_generate_function_with_jacobian, forward_kinematics_spheres
+from crab_codegen.codegen import build_and_generate_function_with_jacobian
+from crusty_kinematics.derived import forward_kinematics_spheres
 
 FK_IS_FREE = "jit_is_collision_free"
 FK_COST = "jit_compute_collision_cost"

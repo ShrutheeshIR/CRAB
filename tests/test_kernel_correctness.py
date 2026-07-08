@@ -10,7 +10,8 @@ You run this yourself (see CLAUDE.md): `python -m tests.test_kernel_correctness`
 import numpy as np
 import symforce.symbolic as sf
 
-from crab_codegen.generate_math import load_panda_robot, forward_kinematics_spheres, q_to_ee_pose
+from crab_codegen.fixtures import load_panda_robot
+from crusty_kinematics.derived import forward_kinematics_spheres, q_to_ee_pose
 from crab_jit import build_simple_jit_function, build_fused_collision_kernel
 
 

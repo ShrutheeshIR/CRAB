@@ -14,7 +14,8 @@ pose), showing task_space_distance built on top of q_to_ee_pose's own convention
 
 import numpy as np
 
-from crab_codegen.generate_math import load_panda_robot, q_to_ee_pose, forward_kinematics_spheres, task_space_distance
+from crab_codegen.fixtures import load_panda_robot
+from crusty_kinematics.derived import q_to_ee_pose, forward_kinematics_spheres, task_space_distance
 from crab_jit import build_fused_collision_kernel, build_simple_jit_function
 
 

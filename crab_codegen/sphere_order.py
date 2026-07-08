@@ -1,7 +1,7 @@
 """Canonical per-robot sphere ordering, shared by codegen and the Python-side model
 builder so both agree on which flat-array index corresponds to which sphere.
 
-crusty_kinematics.fk.forward_kinematics (used by crab_codegen.generate_math to build
+crusty_kinematics.fk.forward_kinematics (used by crusty_kinematics.derived to build
 the SymForce FK function) iterates robot.traversal_order and appends each visited
 joint's child link's primitives, in that order -- it never visits the root link's own
 primitives, since the root link is never anyone's "child" in that loop. Any other

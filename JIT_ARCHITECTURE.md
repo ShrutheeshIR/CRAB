@@ -13,6 +13,29 @@ custom, robot-specific machine code once per robot (via SymForce) and JIT-compil
 at `-O3` (via LLVM/Clang), instead of either a generic interpreted implementation or a
 CMake rebuild every time you touch the math.
 
+## Where the math lives vs. where the machinery lives
+
+These are deliberately separate, so "add a new kinematic quantity" never means
+touching codegen/JIT code:
+
+- **`crusty_kinematics/derived.py`** — the actual math: plain
+  `(robot, q, *extra_inputs) -> sf.Matrix` functions (`forward_kinematics_spheres`,
+  `q_to_ee_pose`, `task_space_distance`). No codegen, no JIT, no `crab_*` imports.
+  Anything here is just a symbolic function you could evaluate directly in Python.
+- **`crab_codegen/codegen.py`** — the generic machinery that turns *any* such function
+  into generated C++ (`build_and_generate_function`, `build_and_generate_function_with_jacobian`).
+  Knows nothing about FK, poses, or collision checking specifically.
+- **`crab_codegen/fixtures.py`** — `load_panda_robot()`, a demo/test convenience, not
+  part of the machinery either.
+
+One cross-cutting detail this split surfaces: SymForce's symbolic backend
+(`symforce.set_symbolic_api(...)`) is process-global, one-time, order-sensitive
+configuration -- it must run before *anything* does `import symforce.symbolic`,
+regardless of which module happens to be imported first by a given entry point. It's
+centralized in `crusty_model/__init__.py` (rather than wherever used to import first
+"by accident"), since `crusty_model.robot.Robot` is a dependency of essentially every
+module here that touches `symforce.symbolic`.
+
 ## The one ABI, the one binder
 
 Every JIT'd C++ function in this codebase, regardless of how it was written, exports
@@ -60,7 +83,7 @@ kernel(q, goal_pose)                         # positional, in extra_inputs' orde
 ```
 
 What happens under the hood, all automatic:
-1. `crab_codegen.generate_math.build_and_generate_function(robot, symbolic_fn, name, extra_inputs)`
+1. `crab_codegen.codegen.build_and_generate_function(robot, symbolic_fn, name, extra_inputs)`
    — builds a symbolic `q` (and one symbolic placeholder per declared extra input),
    calls `symbolic_fn(robot, q, *extras)`, runs `Codegen.function`, generates into a
    scratch dir, and reads the *real* emitted C++ symbol name back out of the
@@ -104,7 +127,7 @@ convenience class (`is_collision_free(q)`, `compute_collision_cost(q, margin)`,
 `compute_collision_cost_with_gradient(q, margin)` methods) -- no bespoke
 `ctypes.CFUNCTYPE` per function.
 
-`crab_codegen.generate_math.build_and_generate_function_with_jacobian(robot,
+`crab_codegen.codegen.build_and_generate_function_with_jacobian(robot,
 symbolic_fn, name)` is Path B's codegen entry point: like Path A's
 `build_and_generate_function`, but also runs `Codegen.function(...).with_jacobian(...)`
 and returns both the value and Jacobian source/symbol names, for pasting into a
@@ -143,7 +166,7 @@ cmake --build crusty_compilations/build --target crab_jit_capi
 
 ## Walkthrough: `fused_demo()`
 
-1. `crab_codegen.generate_math.load_panda_robot()` loads the URDF into a `Robot`.
+1. `crab_codegen.fixtures.load_panda_robot()` loads the URDF into a `Robot`.
 2. `crab_codegen.collision_kernel.build_fused_kernel_source(robot)` generates FK +
    Jacobian, resolves this robot's sphere radii/collision pairs, and fills in the
    fused C++ template.

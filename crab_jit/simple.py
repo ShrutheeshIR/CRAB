@@ -30,7 +30,8 @@ Usage (extra runtime inputs beyond q):
 
 from typing import Callable, Optional
 
-from crab_codegen.generate_math import build_and_generate_function, load_panda_robot
+from crab_codegen.codegen import build_and_generate_function
+from crab_codegen.fixtures import load_panda_robot
 from crab_codegen.jit_wrapper import generate_value_wrapper
 
 from .binder import JitFunction, bind_jit_function
@@ -45,7 +46,7 @@ def build_simple_jit_function(robot=None,
                                module_id: Optional[str] = None) -> JitFunction:
     """symbolic_fn(robot, q, *extra_values) -> sf.Matrix (a flat column vector).
     extra_inputs declares any inputs beyond q as (name, size) pairs -- see
-    crab_codegen.generate_math.build_and_generate_function. Everything else --
+    crab_codegen.codegen.build_and_generate_function. Everything else --
     Codegen.function, reading back SymForce's real emitted symbol name, the extern "C"
     wrapper, compiling at -O3, and the ctypes binding -- is automatic regardless of
     how many inputs there are."""

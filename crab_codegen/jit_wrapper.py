@@ -12,7 +12,7 @@ input:
     Eigen::Matrix<Scalar, N, 1> FuncName(const Eigen::Matrix<Scalar, NQ, 1>& q,
                                          const Eigen::Matrix<Scalar, M, 1>& extra) { ... }
 
-crab_codegen.generate_math reads the real emitted function name back out of the
+crab_codegen.codegen reads the real emitted function name back out of the
 generated source (SymForce reformats whatever name you pass to its own C++ naming
 convention), so there's no name-guessing here -- only the ABI wrapper.
 """
