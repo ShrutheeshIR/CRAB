@@ -4,6 +4,15 @@ from .link import Link
 from .joint import Joint
 
 
+def _joint_limits_by_index(robot) -> list[tuple[float, float]]:
+    """(lower, upper) per q-index. Unlimited (e.g. continuous) or unspecified joints
+    get a wide-open range so the penalty below never activates for them."""
+    limits = [(-1e3, 1e3)] * robot.nq
+    for joint in robot.joints.values():
+        if joint.is_actuated and joint.limits is not None:
+            limits[joint.id] = joint.limits
+    return limits
+
 
 @dataclass(slots=True)
 class Robot:

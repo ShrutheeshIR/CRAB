@@ -114,22 +114,33 @@ def build_and_generate_function(robot: Robot, symbolic_fn, name: str,
     return {"nq": nq, "n_out": n_out, "input_sizes": input_sizes, "source": source, "func_name": func_name}
 
 
-def build_and_generate_function_with_jacobian(robot: Robot, symbolic_fn, name: str) -> dict:
+def build_and_generate_function_with_jacobian(robot: Robot, symbolic_fn, name: str,
+                                               extra_inputs: list[tuple[str, int]] | None = None) -> dict:
     """Path-B counterpart to build_and_generate_function: also generates the Jacobian
-    of symbolic_fn's output w.r.t. q, for embedding both the value and its Jacobian
-    into one hand-written fused kernel translation unit (see
-    crab_codegen.collision_kernel). Path A never needs a Jacobian -- nothing exposes a
-    raw Jacobian externally anymore, it's only ever consumed internally by a fused
+    of symbolic_fn's output w.r.t. q (only ever w.r.t. q -- extra_inputs, if any, are
+    passed through as additional non-differentiated arguments, e.g. a goal pose for an
+    IK residual), for embedding both the value and its Jacobian into one hand-written
+    fused kernel translation unit (see crab_codegen.collision_kernel,
+    crab_codegen.ik_fused). Path A never needs a Jacobian -- nothing exposes a raw
+    Jacobian externally anymore, it's only ever consumed internally by a fused
     kernel's own control flow.
     """
     nq = robot.nq
+    extra_inputs = extra_inputs or []
+
     q = sf.Matrix(nq, 1).symbolic("q")
-    expr = symbolic_fn(robot, q)
+    extra_syms = [sf.Matrix(size, 1).symbolic(ename) for ename, size in extra_inputs]
+
+    expr = symbolic_fn(robot, q, *extra_syms)
     n_out = expr.shape[0]
 
-    codegen_value = Codegen.function(func=lambda q: expr, name=name, input_types=[type(q)], config=CppConfig())
+    param_names = ["q"] + [ename for ename, _ in extra_inputs]
+    traced_func = _make_traced_func(param_names, expr)
+    input_types = [type(q)] + [type(s) for s in extra_syms]
+
+    codegen_value = Codegen.function(func=traced_func, name=name, input_types=input_types, config=CppConfig())
     jac_name = f"{name}_jacobian"
-    codegen_jac = codegen_value.with_jacobian(which_args=["q"], name=jac_name)
+    codegen_jac = codegen_value.with_jacobians(which_args=["q"], name=jac_name)
 
     with tempfile.TemporaryDirectory(prefix="crab_jit_codegen_") as tmp_dir:
         value_dir = os.path.join(tmp_dir, "value")
@@ -143,10 +154,12 @@ def build_and_generate_function_with_jacobian(robot: Robot, symbolic_fn, name: s
 
     value_func_name = _extract_generated_function_name(value_source, name)
     jac_func_name = _extract_generated_function_name(jac_source, jac_name)
+    input_sizes = [nq] + [size for _, size in extra_inputs]
 
     return {
         "nq": nq,
         "n_out": n_out,
+        "input_sizes": input_sizes,
         "value_source": value_source,
         "value_func_name": value_func_name,
         "jac_source": jac_source,

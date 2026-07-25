@@ -36,3 +36,19 @@ def task_space_distance(robot: Robot, q, goal_pose_flat) -> sf.Matrix:
     goal_pose = sf.Pose3.from_storage(list(goal_pose_flat))
     rel = goal_pose.inverse() * ee_pose
     return sf.Matrix([rel.t.norm()])
+
+
+def ik_pose_residual(robot: Robot, q, goal_pose_flat) -> sf.Matrix:
+    """(q, goal_pose) -> 6D tangent-space pose error (3 translation + 3 rotation)
+    between the end effector and a goal pose -- the residual for least-squares IK
+    (see crab_codegen.ik_fused, crab_codegen.ik_symforce_optimizer).
+
+    Unlike task_space_distance, this returns the residual *vector*, not its norm: a
+    least-squares solver needs the actual error vector to form proper normal
+    equations (J^T J, J^T r) -- a norm is non-differentiable at zero and throws away
+    direction entirely.
+    """
+    ee_pose = q_to_eeposes(robot, q, [robot.end_effectors[0]])[0]
+    goal_pose = sf.Pose3.from_storage(list(goal_pose_flat))
+    tangent_error = (goal_pose.inverse() * ee_pose).to_tangent(epsilon=1e-9)
+    return sf.Matrix(list(tangent_error))
